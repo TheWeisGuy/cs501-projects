@@ -86,6 +86,8 @@
 (define extend-env cons)
 
 ;lookup method modified slightly from class to avoid type issues
+;used chatgpt for debugging many of the recursive methods
+
 (define (lookup (x : symbol) (env : (listof (symbol * Value)))) : Value
   (cond
     [(cons? env)
