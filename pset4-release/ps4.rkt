@@ -39,10 +39,12 @@
   [closV (env : Env) (x : symbol) (e : Expr)]
   [boxV (l : Location)]
   [boolV (b : boolean)]
-  [objV (fields : (listof Field))
+  [objV (env : Env)
+        (fields : (listof Field))
         (methods : (listof MethodDecl))
         (delegate : (optionof Value))]
   )
+
 
 (define (parse-field f)
   (let* ([fname (s-exp->symbol (first f))]
@@ -73,14 +75,16 @@
 
     [(s-exp-boolean? s)
      (boolC (s-exp->boolean s))]
-    ;; list form
+  
     [(s-exp-list? s)
      (let ([l (s-exp->list s)])
        (cond
          [(s-exp-symbol? (first l))
           (case (s-exp->symbol (first l))
 
-   
+            [(equal?)
+             (equal?C (parse (second l))
+                      (parse (third l)))]
             [(+) (plusC (parse (second l))
                         (parse (third l)))]
             [(*) (timesC (parse (second l))
@@ -298,160 +302,152 @@
 
     
     [objectC (delegate fields methods)
-
             
              (let* ([deleg-result
                      (if (none? delegate)
                          (pair (none) sto)
                          (let* ([d-expr (some-v delegate)]
-                                [res-deleg (eval-env env sto d-expr)])
-                           (type-case Result res-deleg
-                             [res (dv sto-deleg)
-                                  (pair (some dv) sto-deleg)])))]
-                    [v-delegate       (fst deleg-result)]  
-                    [sto-after-deleg  (snd deleg-result)]) 
+                                [r (eval-env env sto d-expr)])
+                           (type-case Result r
+                             [res (dv sto2) (pair (some dv) sto2)])))]
+                    [v-delegate      (fst deleg-result)]
+                    [sto-after-deleg (snd deleg-result)])
 
-             
+              
                (letrec ([eval-fields
                          (lambda (fs st)
                            (if (empty? fs)
                                (pair empty st)
-                               (let* ([fld    (first fs)]         
-                                      [name   (fst fld)]          
-                                      [expr   (snd fld)]  
-                                      [res-f  (eval-env env st expr)])
-                                 (type-case Result res-f
+                               (let* ([fld  (first fs)]
+                                      [name (fst fld)]
+                                      [expr (snd fld)]
+                                      [rf   (eval-env env st expr)])
+                                 (type-case Result rf
                                    [res (v st-next)
-                                        (let* ([loc       (new-loc)]
-                                               [st-with   (override-store (cell loc v) st-next)]
-                                               [rest-pair (eval-fields (rest fs) st-with)]
-                                               [rest-flds (fst rest-pair)]
-                                               [st-final  (snd rest-pair)])
-                                          (pair (cons (field name loc) rest-flds)
+                                        (let* ([loc      (new-loc)]
+                                               [st-with  (override-store (cell loc v) st-next)]
+                                               [rest-res (eval-fields (rest fs) st-with)]
+                                               [rest-fds (fst rest-res)]
+                                               [st-final (snd rest-res)])
+                                          (pair (cons (field name loc) rest-fds)
                                                 st-final))]))))])
 
-               
-                 (let* ([fs+store  (eval-fields fields sto-after-deleg)]
-                        [field-list (fst fs+store)]  
-                        [sto-final  (snd fs+store)]) 
-                   (res (objV field-list methods v-delegate)
-                        sto-final))))]
+                 (let* ([fs+st   (eval-fields fields sto-after-deleg)]
+                        [flds   (fst fs+st)]
+                        [sto-f  (snd fs+st)])
+                   (res (objV env flds methods v-delegate)
+                        sto-f))))]
 
 
 
 
-    [msgC (o-expr m args)
-          (type-case Result (eval-env env sto o-expr)
-            [res (v-obj sto-1)
-                 (if (not (objV? v-obj))
-                     (error 'msgC "msgC: target is not an object")
+
+   [msgC (o-expr m args)
+  (type-case Result (eval-env env sto o-expr)
+    [res (v-obj sto1)
+      (if (not (objV? v-obj))
+          (error 'msgC "msgC: target is not an object")
+
+          (letrec (
 
                   
-                     (letrec (
+                   [eval-args
+                    (lambda ((es : (listof Expr))
+                             (st : Store)
+                             (acc : (listof Value)))
+                      (if (empty? es)
+                          (pair (reverse acc) st)
+                          (type-case Result (eval-env env st (first es))
+                            [res (v st2)
+                                 (eval-args (rest es) st2 (cons v acc))])))]
 
-                             
-                              [eval-args
-                               (lambda ((es  : (listof Expr))
-                                        (st  : Store)
-                                        (acc : (listof Value)))
-                                 (if (empty? es)
-                                     (pair (reverse acc) st)
-                                     (type-case Result (eval-env env st (first es))
-                                       [res (v st-next)
-                                            (eval-args (rest es)
-                                                       st-next
-                                                       (cons v acc))])))]
 
-                            
-                              [find-method-in
-                               (lambda (obj)
-                                 (letrec ([search
-                                           (lambda (ms)
-                                             (cond
-                                               [(empty? ms) (none)]
-                                               [(symbol=? (method-decl-name (first ms)) m)
-                                                (some (first ms))]
-                                               [else (search (rest ms))]))])
-                                   (search (objV-methods obj))))]
+                 
+                   [find-method-in
+                    (lambda (obj)
+                      (letrec ([loop
+                                (lambda (ms)
+                                  (cond
+                                    [(empty? ms) (none)]
+                                    [(symbol=? (method-decl-name (first ms)) m)
+                                     (some (first ms))]
+                                    [else (loop (rest ms))]))])
+                        (loop (objV-methods obj))))]
 
-                           
-                              [find-method
-                               (lambda (obj)
-                                 (let ([found (find-method-in obj)])
-                                   (if (none? found)
-                                       (let ([del (objV-delegate obj)])
-                                         (if (none? del)
-                                             (error 'msgC "method not found in object or delegate")
-                                             (let ([dobj (some-v del)])
-                                               (if (not (objV? dobj))
-                                                   (error 'msgC "delegate is not an object")
-                                                   (find-method dobj)))))
-                                       (some-v found))))]
+                  
+                   [find-method
+                    (lambda (obj)
+                      (let ([here (find-method-in obj)])
+                        (if (none? here)
+                            (let ([del (objV-delegate obj)])
+                              (if (none? del)
+                                  (error 'msgC "method not found in object or delegate")
+                                  (let ([d (some-v del)])
+                                    (if (not (objV? d))
+                                        (error 'msgC "delegate is not an object")
+                                        (find-method d)))))
+                            (pair obj (some-v here)))))]
 
-                           
-                              [bind-args
-                               (lambda (names vals env0)
-                                 (if (empty? names)
-                                     env0
-                                     (bind-args (rest names)
-                                                (rest vals)
-                                                (extend-env
-                                                 (bind (first names)
-                                                       (first vals))
-                                                 env0))))]
+                  
+                   [bind-args
+                    (lambda (names vals env0)
+                      (if (empty? names)
+                          env0
+                          (bind-args (rest names)
+                                     (rest vals)
+                                     (extend-env
+                                      (bind (first names) (first vals))
+                                      env0))))]
 
-                              )
-                       (let* ([args-pair (eval-args args sto-1 (list))]
-                              [arg-vals  (fst args-pair)]
-                              [sto-args  (snd args-pair)]
+                   )
 
-                            
-                              [md      (find-method v-obj)]
-                              [names   (method-decl-args md)]
-                              [self-name   (first names)]
-                              [other-names (rest names)]
+            (let* ([arg-res   (eval-args args sto1 (list))]
+                   [arg-vals  (fst arg-res)]
+                   [sto2      (snd arg-res)]
 
-                           
-                              [env-self  (extend-env (bind self-name v-obj) env)]
-                              [env-final (bind-args other-names arg-vals env-self)]
+                
+                   [om        (find-method v-obj)]
+                   [owner     (fst om)]
+                   [md        (snd om)]
 
-                           
-                              [res-body (eval-env env-final sto-args
-                                                  (method-decl-body md))])
+                   [names     (method-decl-args md)]
+                   [self-name (first names)]
+                   [other     (rest names)]
 
-                      
-                         res-body)))])]
+                  
+                   [base-env  (objV-env owner)]
+                   [env1      (extend-env (bind self-name v-obj) base-env)]
+                   [env2      (bind-args other arg-vals env1)])
 
+              (eval-env env2 sto2 (method-decl-body md)))))])]
 
 
     [get-fieldC (name)
                 (let ([self (lookup 'self env)])
                   (if (not (objV? self))
                       (error 'get-fieldC "self is not an object")
-                      (letrec ([search-fields
-                               
-                                (lambda (fs)
-                                  (cond
-                                    [(empty? fs) (none)]
-                                    [(symbol=? (field-name (first fs)) name)
-                                     (some (first fs))]
-                                    [else
-                                     (search-fields (rest fs))]))]
-                               [lookup-field
-                              
+                      (letrec ([lookup-field
                                 (lambda (obj)
-                                  (let ([found (search-fields (objV-fields obj))])
-                                    (if (some? found)
-                                        (let* ([fld (some-v found)]
-                                               [loc (field-loc fld)])
-                                          (fetch loc sto))
-                                        (let ([del (objV-delegate obj)])
-                                          (if (none? del)
-                                              (error 'get-fieldC "field not found")
-                                              (let ([dobj (some-v del)])
-                                                (if (not (objV? dobj))
-                                                    (error 'get-fieldC "delegate not an object")
-                                                    (lookup-field dobj))))))))])
+                                  (letrec ([search
+                                            (lambda (fs)
+                                              (cond
+                                                [(empty? fs)
+                                              
+                                                 (let ([del (objV-delegate obj)])
+                                                   (if (none? del)
+                                                       (error 'get-fieldC "field not found")
+                                                       (let ([d (some-v del)])
+                                                         (if (not (objV? d))
+                                                             (error 'get-fieldC "delegate not an object")
+                                                             (lookup-field d)))))]
+
+                                               
+                                                [(symbol=? (field-name (first fs)) name)
+                                                 (fetch (field-loc (first fs)) sto)]
+
+                                                [else (search (rest fs))]))])
+                                    (search (objV-fields obj))))])
+
                         (res (lookup-field self) sto))))]
 
 
@@ -462,8 +458,7 @@
                           (if (not (objV? self))
                               (error 'set-field!C "self is not an object")
 
-                              (letrec ([search-fields
-                                       
+                              (letrec ([find-loc
                                         (lambda (obj)
                                           (letrec ([search
                                                     (lambda (fs)
@@ -472,22 +467,22 @@
                                                          (let ([del (objV-delegate obj)])
                                                            (if (none? del)
                                                                (error 'set-field!C "field not found")
-                                                               (let ([dobj (some-v del)])
-                                                                 (if (not (objV? dobj))
+                                                               (let ([d (some-v del)])
+                                                                 (if (not (objV? d))
                                                                      (error 'set-field!C "delegate not an object")
-                                                                     (search-fields dobj)))))]
+                                                                     (find-loc d)))))]
 
                                                         [(symbol=? (field-name (first fs)) name)
                                                          (field-loc (first fs))]
 
-                                                        [else
-                                                         (search (rest fs))]))])
+                                                        [else (search (rest fs))]))])
                                             (search (objV-fields obj))))])
 
-                                (let* ([loc    (search-fields self)]
-                                       [sto2   (override-store (cell loc v-new) sto1)])
-                                
+                                (let* ([loc (find-loc self)]
+                                       [sto2 (override-store (cell loc v-new) sto1)])
                                   (res self sto2)))))])]
+
+
 
 
     )
